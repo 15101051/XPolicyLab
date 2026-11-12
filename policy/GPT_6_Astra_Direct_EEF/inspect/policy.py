@@ -33,7 +33,7 @@ from .recipes import task_recipe
 from .trace import source_revision
 from .types import JOINT_CHANNELS, Action, ActionChunk, ActionSpace, Observation
 
-_PLANNER_WORKER_PATH = Path(__file__).with_name("planner_http_worker.py")
+_PLANNER_WORKER_MODULE = __package__ + ".planner_http_worker"
 
 
 class CapabilityFailure(Exception):
@@ -261,6 +261,7 @@ def client_config_from_env(env: Mapping[str, str]) -> dict[str, Any]:
     return {
         "planner": planner_name(env),
         "model": _optional_str(env, "L4_INSPECT_MODEL", planner.model),
+        "preserve_model_prefix": _optional_bool(env, "L4_INSPECT_PRESERVE_MODEL_PREFIX", False),
         "azure_endpoint": _optional_str(env, "L4_INSPECT_BASE_URL", _DEFAULT_ENDPOINT),
         "api_version": _optional_str(env, "L4_INSPECT_API_VERSION", planner.api_version),
         "api_key_env": _optional_str(env, "L4_INSPECT_API_KEY_ENV", _DEFAULT_KEY_ENV),
@@ -448,8 +449,10 @@ class AzureAgentClient:
         session_id: str | None = None,
         api_style: str = _DEFAULT_API_STYLE,
         reasoning_effort: str = _DEFAULT_REASONING_EFFORT,
+        preserve_model_prefix: bool = False,
     ) -> None:
         self.model = model
+        self.request_model = model if preserve_model_prefix else model.split("/", 1)[-1]
         self.azure_endpoint = azure_endpoint
         self.api_version = api_version
         self._keys = list(api_keys or [])
@@ -596,6 +599,7 @@ class AzureAgentClient:
             session_id = None
         return cls(
             model=str(config["model"]),
+            preserve_model_prefix=bool(config["preserve_model_prefix"]),
             azure_endpoint=str(config["azure_endpoint"]),
             api_version=str(config["api_version"]),
             api_keys=api_keys,
@@ -664,7 +668,7 @@ class AzureAgentClient:
         worker_env = os.environ.copy()
         worker_env[self.api_key_env] = self.api_key
         process = subprocess.Popen(
-            [sys.executable, str(_PLANNER_WORKER_PATH)],
+            [os.environ.get("L4_INSPECT_HTTP_PYTHON", sys.executable), "-m", _PLANNER_WORKER_MODULE],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -727,7 +731,7 @@ class AzureAgentClient:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> dict[str, Any]:
         request: dict[str, Any] = {
-            "model": self.model.split("/", 1)[-1],
+            "model": self.request_model,
             "messages": messages,
             "tools": tools or None,
             "parallel_tool_calls": False,
@@ -741,7 +745,7 @@ class AzureAgentClient:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> dict[str, Any]:
         request: dict[str, Any] = {
-            "model": self.model.split("/", 1)[-1],
+            "model": self.request_model,
             "input": chat_messages_to_responses_input(
                 messages, reasoning_store=self.reasoning_store
             ),
